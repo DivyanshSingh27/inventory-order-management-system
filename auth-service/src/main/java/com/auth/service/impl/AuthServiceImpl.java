@@ -6,14 +6,16 @@ import com.auth.dto.request.RegisterRequest;
 import com.auth.dto.response.AuthResponse;
 import com.auth.entity.User;
 import com.auth.exception.AuthException;
-import com.auth.exception.ResourceNotFoundException;
 import com.auth.repository.UserRepository;
 import com.auth.service.AuthService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -23,6 +25,7 @@ import java.util.UUID;
 public class AuthServiceImpl implements AuthService {
 
     private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
 
     @Override
     @Transactional
@@ -39,8 +42,8 @@ public class AuthServiceImpl implements AuthService {
         User user = User.builder()
                 .name(request.getName())
                 .email(request.getEmail())
-                .password(simpleHash(request.getPassword()))
-                .role(request.getRole() != null ? request.getRole() : AppConstants.ROLE_USER)
+                .password(passwordEncoder.encode(request.getPassword()))
+                .role(AppConstants.ROLE_USER)
                 .token(token)
                 .tokenExpiry(LocalDateTime.now().plusHours(24))
                 .build();
@@ -59,7 +62,18 @@ public class AuthServiceImpl implements AuthService {
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new AuthException(AppConstants.INVALID_CREDENTIALS));
 
-        if (!simpleHash(request.getPassword()).equals(user.getPassword())) {
+        String rawPassword = request.getPassword();
+        String storedHash = user.getPassword();
+
+        if (isBcryptHash(storedHash)) {
+            if (!passwordEncoder.matches(rawPassword, storedHash)) {
+                throw new AuthException(AppConstants.INVALID_CREDENTIALS);
+            }
+        } else if (verifyLegacyHash(rawPassword, storedHash)) {
+            // Transparently upgrade legacy SHA-256 hash to BCrypt on successful login
+            user.setPassword(passwordEncoder.encode(rawPassword));
+            userRepository.save(user);
+        } else {
             throw new AuthException(AppConstants.INVALID_CREDENTIALS);
         }
 
@@ -103,6 +117,21 @@ public class AuthServiceImpl implements AuthService {
     }
 
     // ─── Helpers ────────────────────────────────────────
+
+    private boolean isBcryptHash(String hash) {
+        return hash != null && (hash.startsWith("$2a$") || hash.startsWith("$2b$") || hash.startsWith("$2y$") || hash.startsWith("$2$"));
+    }
+
+    private boolean verifyLegacyHash(String rawPassword, String storedHash) {
+        if (storedHash == null) {
+            return false;
+        }
+        String computedHash = simpleHash(rawPassword);
+        return MessageDigest.isEqual(
+                computedHash.getBytes(StandardCharsets.UTF_8),
+                storedHash.getBytes(StandardCharsets.UTF_8)
+        );
+    }
 
     private String generateToken() {
         return UUID.randomUUID().toString().replace("-", "") +
