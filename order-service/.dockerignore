@@ -2,3 +2,6 @@ target/
 *.md
 .git/
 .gitignore
+.idea/
+*.iml
+.DS_Store

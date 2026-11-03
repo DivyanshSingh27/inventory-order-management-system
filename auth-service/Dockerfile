@@ -1,11 +1,20 @@
 FROM eclipse-temurin:17-jdk-alpine AS build
 WORKDIR /app
-COPY pom.xml .
-COPY src ./src
+
+# Copy Maven wrapper and grant execution permission
 COPY mvnw .
 COPY .mvn ./.mvn
-RUN ./mvnw clean package -DskipTests
+COPY pom.xml .
+RUN chmod +x ./mvnw
 
+# Cache dependencies (avoids downloading all JARs on every build)
+RUN ./mvnw dependency:go-offline -B
+
+# Copy source code and build JAR
+COPY src ./src
+RUN ./mvnw clean package -DskipTests -B
+
+# Runtime stage
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
