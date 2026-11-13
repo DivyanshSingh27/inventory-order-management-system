@@ -7,7 +7,9 @@ import com.auth.dto.response.AuthResponse;
 import com.auth.entity.User;
 import com.auth.exception.AuthException;
 import com.auth.repository.UserRepository;
+import com.auth.security.JwtTokenProvider;
 import com.auth.service.AuthService;
+import io.jsonwebtoken.Claims;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -16,8 +18,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.time.LocalDateTime;
-import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -26,6 +26,7 @@ public class AuthServiceImpl implements AuthService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final JwtTokenProvider jwtTokenProvider;
 
     @Override
     @Transactional
@@ -37,21 +38,18 @@ public class AuthServiceImpl implements AuthService {
                 AppConstants.EMAIL_ALREADY_EXISTS + request.getEmail());
         }
 
-        String token = generateToken();
-
         User user = User.builder()
                 .name(request.getName())
                 .email(request.getEmail())
                 .password(passwordEncoder.encode(request.getPassword()))
                 .role(AppConstants.ROLE_USER)
-                .token(token)
-                .tokenExpiry(LocalDateTime.now().plusHours(24))
                 .build();
 
         User saved = userRepository.save(user);
         log.info("User registered with id: {}", saved.getId());
 
-        return mapToResponse(saved, AppConstants.USER_REGISTERED);
+        String token = jwtTokenProvider.generateToken(saved.getId(), saved.getEmail(), saved.getRole());
+        return mapToResponse(saved, token, AppConstants.USER_REGISTERED);
     }
 
     @Override
@@ -81,39 +79,37 @@ public class AuthServiceImpl implements AuthService {
             throw new AuthException("Account is deactivated");
         }
 
-        String token = generateToken();
-        user.setToken(token);
-        user.setTokenExpiry(LocalDateTime.now().plusHours(24));
-        userRepository.save(user);
-
+        String token = jwtTokenProvider.generateToken(user.getId(), user.getEmail(), user.getRole());
         log.info("Login successful for user id: {}", user.getId());
-        return mapToResponse(user, AppConstants.LOGIN_SUCCESS);
+        return mapToResponse(user, token, AppConstants.LOGIN_SUCCESS);
     }
 
     @Override
-    @Transactional(readOnly = true)
     public AuthResponse validateToken(String token) {
-        User user = userRepository.findByToken(token)
-                .orElseThrow(() -> new AuthException(AppConstants.INVALID_TOKEN));
+        try {
+            Claims claims = jwtTokenProvider.validateAndGetClaims(token);
+            Long userId = Long.parseLong(claims.getSubject());
+            String email = claims.get("email", String.class);
+            String role = claims.get("role", String.class);
 
-        if (user.getTokenExpiry() == null ||
-                user.getTokenExpiry().isBefore(LocalDateTime.now())) {
+            return AuthResponse.builder()
+                    .id(userId)
+                    .email(email)
+                    .role(role)
+                    .token(token)
+                    .message("Token is valid")
+                    .build();
+        } catch (Exception e) {
             throw new AuthException(AppConstants.INVALID_TOKEN);
         }
-
-        return mapToResponse(user, "Token is valid");
     }
 
     @Override
-    @Transactional
     public void logout(String token) {
-        User user = userRepository.findByToken(token)
-                .orElseThrow(() -> new AuthException(AppConstants.INVALID_TOKEN));
-
-        user.setToken(null);
-        user.setTokenExpiry(null);
-        userRepository.save(user);
-        log.info("User logged out: {}", user.getEmail());
+        // Documented no-op for stateless JWT authentication:
+        // Tokens are cryptographically validated statelessly until expiration;
+        // client is responsible for discarding the token on logout.
+        log.info("Logout request received; client discards stateless JWT");
     }
 
     // ─── Helpers ────────────────────────────────────────
@@ -133,11 +129,6 @@ public class AuthServiceImpl implements AuthService {
         );
     }
 
-    private String generateToken() {
-        return UUID.randomUUID().toString().replace("-", "") +
-               UUID.randomUUID().toString().replace("-", "");
-    }
-
     private String simpleHash(String input) {
         try {
             java.security.MessageDigest md =
@@ -153,13 +144,13 @@ public class AuthServiceImpl implements AuthService {
         }
     }
 
-    private AuthResponse mapToResponse(User user, String message) {
+    private AuthResponse mapToResponse(User user, String token, String message) {
         return AuthResponse.builder()
                 .id(user.getId())
                 .name(user.getName())
                 .email(user.getEmail())
                 .role(user.getRole())
-                .token(user.getToken())
+                .token(token)
                 .message(message)
                 .build();
     }

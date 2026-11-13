@@ -7,6 +7,7 @@ import com.auth.dto.response.AuthResponse;
 import com.auth.entity.User;
 import com.auth.exception.AuthException;
 import com.auth.repository.UserRepository;
+import com.auth.security.JwtTokenProvider;
 import com.auth.service.impl.AuthServiceImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
@@ -38,16 +39,21 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class AuthServiceImplTest {
 
+    private static final String TEST_SECRET = "testSecretKeyMustBeAtLeast32BytesLongForHS256Validation!";
+    private static final long TEST_EXPIRATION_MS = 1800000L;
+
     @Mock
     private UserRepository userRepository;
 
+    private JwtTokenProvider jwtTokenProvider;
     private AuthServiceImpl authService;
 
     private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
 
     @BeforeEach
     void setUp() {
-        authService = new AuthServiceImpl(userRepository, new BCryptPasswordEncoder());
+        jwtTokenProvider = new JwtTokenProvider(TEST_SECRET, TEST_EXPIRATION_MS);
+        authService = new AuthServiceImpl(userRepository, new BCryptPasswordEncoder(), jwtTokenProvider);
     }
 
     // ─── 1. Role Ignored & Default User Role ─────────────────────────────
@@ -159,13 +165,14 @@ class AuthServiceImplTest {
             return u;
         });
 
-        authService.register(request);
+        AuthResponse response = authService.register(request);
 
         ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
         verify(userRepository).save(captor.capture());
         assertThat(captor.getValue().getPassword())
                 .as("Stored password must start with BCrypt identifier '$2'")
                 .startsWith("$2");
+        assertThat(response.getToken()).isNotBlank();
     }
 
     // ─── 4. Login: Wrong Password Fails ──────────────────────────────────
@@ -293,6 +300,33 @@ class AuthServiceImplTest {
         AuthResponse loginResponse = authService.login(loginRequest);
         assertThat(loginResponse).isNotNull();
         assertThat(loginResponse.getToken()).isNotNull();
+    }
+
+    // ─── 7. Stateless Validation and Logout ───────────────────────────────
+
+    @Test
+    @DisplayName("Validate: Statelessly validates JWT without querying UserRepository")
+    void validateToken_statelessValidation_doesNotCallUserRepository() {
+        String token = jwtTokenProvider.generateToken(77L, "stateless@example.com", "USER");
+
+        AuthResponse response = authService.validateToken(token);
+
+        assertThat(response.getId()).isEqualTo(77L);
+        assertThat(response.getEmail()).isEqualTo("stateless@example.com");
+        assertThat(response.getRole()).isEqualTo("USER");
+        assertThat(response.getMessage()).isEqualTo("Token is valid");
+
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    @DisplayName("Logout: Documented no-op for stateless JWT, does not query or update UserRepository")
+    void logout_isDocumentedNoOp_doesNotCallUserRepository() {
+        String token = jwtTokenProvider.generateToken(88L, "logout@example.com", "USER");
+
+        authService.logout(token);
+
+        verifyNoInteractions(userRepository);
     }
 
     // ─── Helper for tests ────────────────────────────────────────────────
