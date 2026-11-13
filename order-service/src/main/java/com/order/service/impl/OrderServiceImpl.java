@@ -13,6 +13,8 @@ import com.order.service.OrderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,7 +35,6 @@ public class OrderServiceImpl implements OrderService {
     private final OrderRepository orderRepository;
     private final RestTemplate restTemplate;
 
-    // Injected from application.properties
     @Value("${inventory.service.url}")
     private String inventoryServiceUrl;
 
@@ -46,18 +47,14 @@ public class OrderServiceImpl implements OrderService {
         log.info("Placing order for productId: {}, quantity: {}",
                 request.getProductId(), request.getQuantity());
 
-        // ── Step 1: Fetch product from Inventory Service ──
         ProductResponse product = fetchProduct(request.getProductId());
 
-        // ── Step 2: Check stock availability ──────────────
         if (product.getQuantityInStock() < request.getQuantity()) {
             throw new InsufficientStockException(AppConstants.INSUFFICIENT_STOCK);
         }
 
-        // ── Step 3: Deduct stock from Inventory Service ───
         deductStock(request.getProductId(), request.getQuantity());
 
-        // ── Step 4: Calculate total and save order ────────
         BigDecimal totalPrice = product.getPrice()
                 .multiply(BigDecimal.valueOf(request.getQuantity()));
 
@@ -76,7 +73,6 @@ public class OrderServiceImpl implements OrderService {
         Order savedOrder = orderRepository.save(order);
         log.info("Order saved with id: {}", savedOrder.getId());
 
-        // ── Step 5: Send notification ─────────────────────
         sendNotification(
                 AppConstants.NOTIF_ORDER_PLACED,
                 String.format("Order #%d placed by %s for %s x%d",
@@ -133,6 +129,8 @@ public class OrderServiceImpl implements OrderService {
             throw new IllegalStateException("Order is already cancelled");
         }
 
+        restoreStock(order.getProductId(), order.getQuantity());
+
         order.setStatus(AppConstants.STATUS_CANCELLED);
         Order saved = orderRepository.save(order);
 
@@ -145,27 +143,18 @@ public class OrderServiceImpl implements OrderService {
         return mapToResponse(saved);
     }
 
-    // ─── Private: Inter-Service Calls ───────────────────
-
-    /**
-     * Calls GET /api/v1/products/{id} on Inventory Service.
-     * Returns the product details including price and stock.
-     */
     private ProductResponse fetchProduct(Long productId) {
         String url = inventoryServiceUrl + "/api/v1/products/" + productId;
         log.info("Calling Inventory Service: GET {}", url);
 
         try {
-            // RestTemplate.getForEntity sends HTTP GET and
-            // deserializes the response body into ApiResponse
-            ResponseEntity<Map> response = restTemplate.getForEntity(url, Map.class);
+            ResponseEntity response = restTemplate.getForEntity(url, Map.class);
 
             if (response.getBody() == null || !Boolean.TRUE.equals(
                     ((Map<?, ?>) response.getBody()).get("success"))) {
                 throw new ResourceNotFoundException(AppConstants.PRODUCT_NOT_FOUND);
             }
 
-            // Extract the 'data' map and convert to ProductResponse
             Map<?, ?> data = (Map<?, ?>) ((Map<?, ?>) response.getBody()).get("data");
             return mapToProductResponse(data);
 
@@ -179,10 +168,6 @@ public class OrderServiceImpl implements OrderService {
         }
     }
 
-    /**
-     * Calls PATCH /api/v1/products/{id}/deduct-stock on Inventory Service.
-     * Atomically deducts the requested quantity from stock.
-     */
     private void deductStock(Long productId, Integer quantity) {
         String url = inventoryServiceUrl + "/api/v1/products/" + productId + "/deduct-stock";
         log.info("Calling Inventory Service: PATCH {}", url);
@@ -190,7 +175,7 @@ public class OrderServiceImpl implements OrderService {
         try {
             Map<String, Integer> body = new HashMap<>();
             body.put("quantity", quantity);
-            restTemplate.exchange(url, org.springframework.http.HttpMethod.PATCH, new org.springframework.http.HttpEntity<>(body), Map.class);
+            restTemplate.exchange(url, HttpMethod.PATCH, new HttpEntity<>(body), Map.class);
         } catch (HttpClientErrorException e) {
             log.error("Stock deduction failed: {}", e.getMessage());
             throw new InsufficientStockException(AppConstants.INSUFFICIENT_STOCK);
@@ -200,11 +185,20 @@ public class OrderServiceImpl implements OrderService {
         }
     }
 
-    /**
-     * Calls POST /api/v1/notifications on Notification Service.
-     * Fire-and-forget — we log errors but don't fail the order
-     * if notification fails. Order is already saved at this point.
-     */
+    private void restoreStock(Long productId, Integer quantity) {
+        String url = inventoryServiceUrl + "/api/v1/products/" + productId + "/restore-stock";
+        log.info("Calling Inventory Service: PATCH {}", url);
+
+        try {
+            Map<String, Integer> body = new HashMap<>();
+            body.put("quantity", quantity);
+            restTemplate.exchange(url, HttpMethod.PATCH, new HttpEntity<>(body), Map.class);
+        } catch (Exception e) {
+            log.error("Error restoring stock in Inventory Service: {}", e.getMessage());
+            throw new ServiceCommunicationException(AppConstants.INVENTORY_ERROR);
+        }
+    }
+
     private void sendNotification(String type, String message, String referenceId) {
         String url = notificationServiceUrl + "/api/v1/notifications";
         log.info("Calling Notification Service: POST {}", url);
@@ -217,14 +211,9 @@ public class OrderServiceImpl implements OrderService {
             restTemplate.postForObject(url, body, Map.class);
             log.info("Notification sent successfully");
         } catch (Exception e) {
-            // Non-critical — log but don't throw
-            // Order is saved, notification failure shouldn't
-            // roll back the entire transaction
             log.error("Failed to send notification: {}", e.getMessage());
         }
     }
-
-    // ─── Private: Helpers ───────────────────────────────
 
     private Order findOrderById(Long id) {
         return orderRepository.findById(id)
