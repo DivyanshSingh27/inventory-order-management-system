@@ -15,7 +15,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
-
 @RestController
 @RequestMapping("/api/v1/products")
 @RequiredArgsConstructor
@@ -24,11 +23,6 @@ public class ProductController {
 
     private final ProductService productService;
 
-    /**
-     * POST /api/v1/products
-     * Create a new product.
-     * HTTP 201 Created on success.
-     */
     @PostMapping
     public ResponseEntity<ApiResponse<ProductResponse>> createProduct(
             @Valid @RequestBody CreateProductRequest request) {
@@ -39,10 +33,6 @@ public class ProductController {
                 .body(ApiResponse.success(AppConstants.PRODUCT_CREATED, response));
     }
 
-    /**
-     * GET /api/v1/products
-     * Get all active products.
-     */
     @GetMapping
     public ResponseEntity<ApiResponse<List<ProductResponse>>> getAllProducts() {
         log.info("GET /api/v1/products - fetching all products");
@@ -52,10 +42,6 @@ public class ProductController {
         );
     }
 
-    /**
-     * GET /api/v1/products/{id}
-     * Get a single product by ID.
-     */
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<ProductResponse>> getProductById(
             @PathVariable Long id) {
@@ -66,10 +52,6 @@ public class ProductController {
         );
     }
 
-    /**
-     * GET /api/v1/products/sku/{sku}
-     * Get a product by SKU — used by Order Service.
-     */
     @GetMapping("/sku/{sku}")
     public ResponseEntity<ApiResponse<ProductResponse>> getProductBySku(
             @PathVariable String sku) {
@@ -80,10 +62,6 @@ public class ProductController {
         );
     }
 
-    /**
-     * GET /api/v1/products/category/{category}
-     * Get all products in a category.
-     */
     @GetMapping("/category/{category}")
     public ResponseEntity<ApiResponse<List<ProductResponse>>> getProductsByCategory(
             @PathVariable String category) {
@@ -94,10 +72,6 @@ public class ProductController {
         );
     }
 
-    /**
-     * PUT /api/v1/products/{id}
-     * Update an existing product.
-     */
     @PutMapping("/{id}")
     public ResponseEntity<ApiResponse<ProductResponse>> updateProduct(
             @PathVariable Long id,
@@ -109,10 +83,6 @@ public class ProductController {
         );
     }
 
-    /**
-     * DELETE /api/v1/products/{id}
-     * Soft delete a product (sets active = false).
-     */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteProduct(@PathVariable Long id) {
         log.info("DELETE /api/v1/products/{} - soft deleting product", id);
@@ -122,11 +92,6 @@ public class ProductController {
         );
     }
 
-    /**
-     * PATCH /api/v1/products/{id}/deduct-stock
-     * Deduct stock — called by Order Service when order is placed.
-     * PATCH is correct here because we're partially updating one field.
-     */
     @PatchMapping("/{id}/deduct-stock")
     public ResponseEntity<ApiResponse<ProductResponse>> deductStock(
             @PathVariable Long id,
@@ -138,10 +103,17 @@ public class ProductController {
         );
     }
 
-    /**
-     * GET /api/v1/products/{id}/stock-check?quantity=5
-     * Check if enough stock is available — used by Order Service.
-     */
+    @PatchMapping("/{id}/restore-stock")
+    public ResponseEntity<ApiResponse<ProductResponse>> restoreStock(
+            @PathVariable Long id,
+            @Valid @RequestBody UpdateStockRequest request) {
+        log.info("PATCH /api/v1/products/{}/restore-stock - quantity: {}", id, request.getQuantity());
+        ProductResponse response = productService.restoreStock(id, request);
+        return ResponseEntity.ok(
+                ApiResponse.success(AppConstants.STOCK_UPDATED, response)
+        );
+    }
+
     @GetMapping("/{id}/stock-check")
     public ResponseEntity<ApiResponse<Boolean>> checkStock(
             @PathVariable Long id,

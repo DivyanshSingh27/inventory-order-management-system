@@ -24,5 +24,7 @@ public interface ProductService {
 
     ProductResponse deductStock(Long id, UpdateStockRequest request);
 
+    ProductResponse restoreStock(Long id, UpdateStockRequest request);
+
     boolean isStockAvailable(Long id, Integer quantity);
 }

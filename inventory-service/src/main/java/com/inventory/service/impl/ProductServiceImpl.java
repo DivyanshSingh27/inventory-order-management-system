@@ -30,14 +30,12 @@ public class ProductServiceImpl implements ProductService {
     public ProductResponse createProduct(CreateProductRequest request) {
         log.info("Creating product with SKU: {}", request.getSku());
 
-        // Guard: reject duplicate SKU before hitting DB constraint
         if (productRepository.existsBySku(request.getSku())) {
             throw new DuplicateResourceException(
                     AppConstants.DUPLICATE_SKU + request.getSku()
             );
         }
 
-        // Build entity from request DTO using Builder pattern
         Product product = Product.builder()
                 .name(request.getName())
                 .sku(request.getSku())
@@ -99,7 +97,6 @@ public class ProductServiceImpl implements ProductService {
         log.info("Updating product with id: {}", id);
         Product product = findProductById(id);
 
-        // If SKU is being changed, check new SKU isn't taken by another product
         if (!product.getSku().equals(request.getSku())
                 && productRepository.existsBySku(request.getSku())) {
             throw new DuplicateResourceException(
@@ -126,7 +123,6 @@ public class ProductServiceImpl implements ProductService {
         log.info("Soft deleting product with id: {}", id);
         Product product = findProductById(id);
 
-        // Soft delete — set active = false, never actually DELETE from DB
         product.setActive(false);
         productRepository.save(product);
         log.info("Product soft deleted with id: {}", id);
@@ -137,10 +133,8 @@ public class ProductServiceImpl implements ProductService {
     public ProductResponse deductStock(Long id, UpdateStockRequest request) {
         log.info("Deducting {} units from product id: {}", request.getQuantity(), id);
 
-        // First verify product exists
         findProductById(id);
 
-        // Atomic deduction — returns 0 if stock insufficient
         int rowsUpdated = productRepository.deductStock(id, request.getQuantity());
 
         if (rowsUpdated == 0) {
@@ -149,8 +143,19 @@ public class ProductServiceImpl implements ProductService {
             );
         }
 
-        // Fetch fresh state after update to return accurate stock level
         return mapToResponse(findProductById(id));
+    }
+
+    @Override
+    @Transactional
+    public ProductResponse restoreStock(Long id, UpdateStockRequest request) {
+        log.info("Restoring {} units to product id: {}", request.getQuantity(), id);
+
+        Product product = findProductById(id);
+        product.setQuantityInStock(product.getQuantityInStock() + request.getQuantity());
+        Product updatedProduct = productRepository.save(product);
+
+        return mapToResponse(updatedProduct);
     }
 
     @Override
@@ -160,14 +165,12 @@ public class ProductServiceImpl implements ProductService {
         return product.getActive() && product.getQuantityInStock() >= quantity;
     }
 
-    // ─── Private helpers ────────────────────────────────
     private Product findProductById(Long id) {
         return productRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         AppConstants.PRODUCT_NOT_FOUND + id
                 ));
     }
-
 
     private ProductResponse mapToResponse(Product product) {
         return ProductResponse.builder()
